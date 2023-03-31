@@ -1,7 +1,8 @@
-FROM python:3.9-alpine
-RUN apk --no-cache add gcc musl-dev
-RUN apk add  --no-cache ffmpeg
-COPY . /opt/whisperer/
+FROM python:3.11
+RUN apt-get update
+RUN apt-get install ffmpeg -y
 WORKDIR /opt/whisperer/
+COPY ./requirements.txt /opt/whisperer/
 RUN pip install -r requirements.txt
+COPY . /opt/whisperer/
 ENTRYPOINT ["python", "app.py"]

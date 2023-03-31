@@ -30,7 +30,7 @@ OR
 
 1. Build a docker image:
    ```
-   docker build . --no-cache -t whisperer
+   docker build . -t whisperer
    ```
 2. Run a docker container:
    ```
