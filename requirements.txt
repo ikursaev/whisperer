@@ -1,5 +1,4 @@
 openai
-telegram
 python-telegram-bot
 pydub
 environs
