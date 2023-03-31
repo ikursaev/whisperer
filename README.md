@@ -1,3 +1,9 @@
+# Whisperer Bot
+
+A Telegram bot that uses OpenAI Whisper API to automatically transcribe voice messages in Telegram groups
+
+### HOW TO USE
+
 1. Clone the repository
 
 2. Optionally create a venv and activate the venv
