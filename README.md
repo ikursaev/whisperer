@@ -34,5 +34,5 @@ OR
    ```
 2. Run a docker container:
    ```
-   docker run --env-file ./.env whisperer env -d --restart unless-stopped
+   docker run --name whisperer --env-file ./.env whisperer env -dti --restart unless-stopped
    ```
