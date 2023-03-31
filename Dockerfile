@@ -1,4 +1,4 @@
-FROM python:3.11-alpine
+FROM python:3.9-alpine
 RUN apk --no-cache add gcc musl-dev
 RUN apk add  --no-cache ffmpeg
 COPY . /opt/whisperer/
