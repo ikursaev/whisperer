@@ -109,12 +109,12 @@ class VoiceMessageHandler:
         self.group_filter = group_filter
 
     async def handle(self, update: Update, context: CallbackContext) -> None:
-        chat_id = update.effective_chat.id
-        if not self.group_filter.is_allowed(chat_id) or not self.group_filter.is_test(chat_id):
+        group_id = update.effective_chat.id
+        if not self.group_filter.is_allowed(group_id) and not self.group_filter.is_test(group_id):
             await update.message.reply_text("This bot only works in the allowed group.")
             return
 
-        if self.rate_limiter.is_limited(chat_id):
+        if self.rate_limiter.is_limited(group_id):
             await update.message.reply_text(
                 "You can only transcribe one message per 10 seconds. Please wait.",
                 )
@@ -141,12 +141,12 @@ class TextMessageHandler:
         self.group_filter = group_filter
 
     async def handle(self, update: Update, context: CallbackContext) -> None:
-        chat_id = update.effective_chat.id
-        if not self.group_filter.is_allowed(chat_id) or not self.group_filter.is_test(chat_id):
+        group_id = update.effective_chat.id
+        if not self.group_filter.is_allowed(group_id) and not self.group_filter.is_test(group_id):
             await update.message.reply_text("This bot only works in the allowed group.")
             return
 
-        if self.rate_limiter.is_limited(chat_id):
+        if self.rate_limiter.is_limited(group_id):
             await update.message.reply_text("You can only transcribe one message per 10 seconds. Please wait.")
             return
 
