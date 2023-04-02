@@ -168,6 +168,10 @@ class TextMessageHandler:
             )
         except openai.error.InvalidRequestError:
             self.messages.pop(0)
+            logging.exception("Context is too big")
+            await update.message.reply_text(
+                "An error occurred while getting response from ChatGPT. Please try again.",
+            )
         except Exception:
             logging.exception("Error getting ChatGPT response")
             await update.message.reply_text(
