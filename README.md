@@ -8,7 +8,7 @@ A Telegram bot that uses OpenAI Whisper API to automatically transcribe voice me
 
 2. Optionally create a venv and activate the venv
 
-3. Run 
+3. Run
 
     ```
     pip install -r requirements.txt
@@ -18,10 +18,11 @@ A Telegram bot that uses OpenAI Whisper API to automatically transcribe voice me
     ```
     TELEGRAM_API_KEY=AAAAAAAAAA:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
     WHISPER_API_KEY=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-    ALLOWED_GROUP_CHAT_IDS=-100,-1000
+    ALLOWED_GROUP_IDS=-100,-1000
+    TEST_GROUP_IDS=-1000,-2000
     ```
 5. Run
-   
+
     ```
     python app.py
     ```
