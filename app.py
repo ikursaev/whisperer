@@ -146,10 +146,6 @@ class TextMessageHandler:
             await update.message.reply_text("This bot only works in the allowed group.")
             return
 
-        if self.rate_limiter.is_limited(group_id):
-            await update.message.reply_text("You can only transcribe one message per 10 seconds. Please wait.")
-            return
-
         text = update.message.text
 
         if not text:
@@ -158,14 +154,22 @@ class TextMessageHandler:
         if not text.startswith(f"@{update.get_bot().name}"):
             return
 
+        if self.rate_limiter.is_limited(group_id):
+            await update.message.reply_text("You can only transcribe one message per 10 seconds. Please wait.")
+            return
+
         try:
             response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo", messages=text, max_tokens=512,
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": text}],
+                max_tokens=512,
             )
             await update.message.reply_text(response)
         except Exception:
             logging.exception("Error getting ChatGPT response")
-            await update.message.reply_text("An error occurred while transcribing your message. Please try again.")
+            await update.message.reply_text(
+                "An error occurred while transcribing your message. Please try again."
+            )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
