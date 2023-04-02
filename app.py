@@ -139,7 +139,7 @@ class TextMessageHandler:
     def __init__(self, rate_limiter: RateLimiter, group_filter: GroupFilter):
         self.rate_limiter = rate_limiter
         self.group_filter = group_filter
-        self.messages: list[dict[str, str]] = []
+        self.messages: dict[int, list[dict[str, str]]] = {}
 
     async def handle(self, update: Update, context: CallbackContext) -> None:
         group_id = update.effective_chat.id
@@ -159,15 +159,15 @@ class TextMessageHandler:
             await update.message.reply_text("You can only transcribe one message per 10 seconds. Please wait.")
             return
 
-        self.messages.append({"role": "user", "content": text})
+        self.messages[group_id].append({"role": "user", "content": text})
         try:
             response = openai.ChatCompletion.create(
                 model="gpt-3.5-turbo",
-                messages=self.messages,
+                messages=self.messages[group_id],
                 max_tokens=2048,
             )
         except openai.error.InvalidRequestError:
-            self.messages.pop(0)
+            self.messages[group_id].pop(0)
             logging.exception("Context is too big")
             await update.message.reply_text(
                 "An error occurred while getting response from ChatGPT. Please try again.",
@@ -179,7 +179,7 @@ class TextMessageHandler:
             )
         else:
             content = response.to_dict()["choices"][0]["message"]["content"]
-            self.messages.append({"role": "assistant", "content": content})
+            self.messages[group_id].append({"role": "assistant", "content": content})
             await update.message.reply_text(content)
 
 
