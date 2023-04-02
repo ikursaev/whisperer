@@ -66,7 +66,7 @@ class WhisperASR:
 
 
 class DummyLimiter:
-    def is_limited(self) -> bool:
+    def is_limited(self, *args, **kwargs) -> bool:
         return False
 
 
@@ -205,7 +205,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 def main() -> None:
-    if SERVER == "TEST":
+    if SERVER == Server.TEST:
         rate_limiter: RateLimiter = DummyLimiter()
     else:
         rate_limiter = RateLimiterByTime(timedelta(seconds=10))
