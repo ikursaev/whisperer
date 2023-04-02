@@ -8,7 +8,7 @@ import typing as t
 
 from environs import Env
 import openai
-from pydub import AudioSegment, effects
+from pydub import AudioSegment
 from telegram import File, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -28,6 +28,7 @@ bot_api_key = env("TELEGRAM_BOT_API_KEY")
 whisper_api_key = env("OPENAI_WHISPER_API_KEY")
 allowed_group_ids = env.list("ALLOWED_GROUP_IDS", subcast=int)
 test_group_ids = env.list("TEST_GROUP_IDS", subcast=int)
+SERVER = env("SERVER")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO,
@@ -35,9 +36,7 @@ logging.basicConfig(
 
 
 def convert_ogg_to_mp3(ogg_file: BytesIO, output_file: t.IO) -> None:
-    segment = AudioSegment.from_ogg(ogg_file)
-    audio = effects.speedup(segment)
-    audio.export(output_file, format="mp3")
+    AudioSegment.from_ogg(ogg_file).export(output_file, format="mp3")
 
 
 class ASR(t.Protocol):
@@ -56,6 +55,11 @@ class WhisperASR:
 
     def transcribe_speech(self, output_voice_file: t.IO) -> str:
         return openai.Audio.transcribe("whisper-1", output_voice_file)["text"]
+
+
+class DummyLimiter:
+    def is_limited(self) -> bool:
+        return False
 
 
 class RateLimiterByTime:
@@ -156,10 +160,12 @@ class TextMessageHandler:
             return
 
         if self.rate_limiter.is_limited(group_id):
-            await update.message.reply_text("You can only transcribe one message per 10 seconds. Please wait.")
+            await update.message.reply_text(
+                "You can only transcribe one message per 10 seconds. Please wait.",
+            )
             return
 
-        self.messages[group_id].append({"role": "user", "content": text})
+        self.messages.setdefault(group_id, []).append({"role": "user", "content": text})
         try:
             response = openai.ChatCompletion.create(
                 model="gpt-3.5-turbo",
@@ -191,13 +197,19 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 def main() -> None:
-    whisper_asr = WhisperASR(whisper_api_key)
-    rate_limiter = RateLimiterByTime(timedelta(seconds=10))
+    if SERVER == "TEST":
+        rate_limiter: RateLimiter = DummyLimiter()
+    else:
+        rate_limiter = RateLimiterByTime(timedelta(seconds=10))
+
     group_filter = GroupFilter(allowed_group_ids, test_group_ids)
+
+    whisper_asr = WhisperASR(whisper_api_key)
     voice_message_transcriber = VoiceMessageTranscriber(whisper_asr)
+
     voice_message_handler = VoiceMessageHandler(
         voice_message_transcriber, rate_limiter, group_filter,
-        )
+    )
     text_message_handler = TextMessageHandler(rate_limiter, group_filter)
 
     application = ApplicationBuilder().token(bot_api_key).build()
