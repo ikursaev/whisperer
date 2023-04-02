@@ -5,6 +5,7 @@ from enum import Enum
 from io import BytesIO
 import logging
 import tempfile
+import time
 import typing as t
 
 from environs import Env
@@ -177,27 +178,31 @@ class TextMessageHandler:
         text = text.removeprefix(bot_name)
 
         self.messages.setdefault(group_id, []).append({"role": "user", "content": text})
-        try:
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=self.messages[group_id],
-                max_tokens=2048,
-            )
-        except openai.error.InvalidRequestError:
-            self.messages[group_id].pop(0)
-            logging.exception("Context is too big")
-            await update.message.reply_text(
-                "An error occurred while getting response from ChatGPT. Please try again.",
-            )
-        except Exception:
-            logging.exception("Error getting ChatGPT response")
-            await update.message.reply_text(
-                "An error occurred while getting response from ChatGPT. Please try again.",
-            )
-        else:
-            content = response.to_dict()["choices"][0]["message"]["content"]
-            self.messages[group_id].append({"role": "assistant", "content": content})
-            await update.message.reply_text(content)
+
+        while True:
+            try:
+                response = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=self.messages[group_id],
+                    max_tokens=2048,
+                )
+            except openai.error.InvalidRequestError:
+                logging.exception(
+                    "Context is too big. Number of messages: %s", len(self.messages[group_id]),
+                )
+                self.messages[group_id].pop(0)
+                time.sleep(0.5)
+            except Exception:
+                logging.exception("Error getting ChatGPT response")
+                await update.message.reply_text(
+                    "An error occurred while getting response from ChatGPT. Please try again.",
+                )
+                return
+            else:
+                content = response.to_dict()["choices"][0]["message"]["content"]
+                self.messages[group_id].append({"role": "assistant", "content": content})
+                await update.message.reply_text(content)
+                return
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
