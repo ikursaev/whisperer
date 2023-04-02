@@ -164,7 +164,8 @@ class TextMessageHandler:
         if not text:
             return
 
-        if not text.startswith(update.get_bot().name):
+        bot_name = update.get_bot().name
+        if not text.startswith(bot_name):
             return
 
         if self.rate_limiter.is_limited(group_id):
@@ -172,6 +173,8 @@ class TextMessageHandler:
                 "You can only transcribe one message per 10 seconds. Please wait.",
             )
             return
+
+        text = text.removeprefix(bot_name)
 
         self.messages.setdefault(group_id, []).append({"role": "user", "content": text})
         try:
