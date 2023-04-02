@@ -1,6 +1,7 @@
 """Telegram Whisperer bot."""
 
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from io import BytesIO
 import logging
 import tempfile
@@ -20,15 +21,22 @@ from telegram.ext import (
 )
 
 
-env = Env()
+env = Env(eager=False)
 env.read_env()
+
+
+class Server(Enum):
+    TEST = 1
+    PROD = 2
 
 
 bot_api_key = env("TELEGRAM_BOT_API_KEY")
 whisper_api_key = env("OPENAI_WHISPER_API_KEY")
 allowed_group_ids = env.list("ALLOWED_GROUP_IDS", subcast=int)
 test_group_ids = env.list("TEST_GROUP_IDS", subcast=int)
-SERVER = env("SERVER")
+SERVER = env.enum("SERVER", type=Server)
+
+env.seal()
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO,
