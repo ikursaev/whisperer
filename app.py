@@ -166,10 +166,12 @@ class TextMessageHandler:
                 messages=self.messages,
                 max_tokens=2048,
             )
+        except openai.error.InvalidRequestError:
+            self.messages.pop(0)
         except Exception:
             logging.exception("Error getting ChatGPT response")
             await update.message.reply_text(
-                "An error occurred while getting response from . Please try again.",
+                "An error occurred while getting response from ChatGPT. Please try again.",
             )
         else:
             content = response.to_dict()["choices"][0]["message"]["content"]
