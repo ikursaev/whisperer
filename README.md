@@ -19,3 +19,7 @@ A Telegram bot that uses OpenAI Whisper API to automatically transcribe voice me
     ```
     python app.py
     ```
+    OR
+    ```
+    docker-compose up -d
+    ```

@@ -5,4 +5,4 @@ WORKDIR /opt/whisperer/
 COPY ./pyproject.toml /opt/whisperer/
 RUN pip install .
 COPY . /opt/whisperer/
-ENTRYPOINT ["python", "app.py"]
+# ENTRYPOINT ["python", "app.py"]

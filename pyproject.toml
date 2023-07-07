@@ -51,3 +51,6 @@ force-sort-within-sections = true
 
 [tool.ruff.pylint]
 max-args = 5
+
+[tool.mypy]
+plugins = ["typed_settings.mypy"]

@@ -1,0 +1,14 @@
+version: '3.1'
+
+services:
+  whisperer:
+    build: .
+    command: python app.py
+    environment:
+      WHISPERER_SETTINGS: /run/secrets/.secrets.toml
+    secrets:
+      - .secrets.toml
+    restart: unless-stopped
+secrets:
+  .secrets.toml:
+    file: .secrets.toml
