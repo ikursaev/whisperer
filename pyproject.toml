@@ -5,7 +5,7 @@ dependencies = [
     "openai",
     "python-telegram-bot",
     "pydub",
-    "environs"
+    "typed_settings"
 ]
 
 [tool.ruff]
