@@ -1,17 +1,15 @@
 """Telegram Whisperer bot."""
 
 from datetime import UTC, datetime, timedelta
-from enum import Enum
 from io import BytesIO
 import logging
 import tempfile
 import time
 import typing as t
 
-from environs import Env
 import openai
 from pydub import AudioSegment
-from telegram import File, Update
+from telegram import Bot, File, Update
 from telegram.ext import (
     ApplicationBuilder,
     CallbackContext,
@@ -21,62 +19,45 @@ from telegram.ext import (
     filters,
 )
 
+from config import Server, settings
+from protocols import ASR, AudioTranscriber, RateLimiter, RateLimiterKwargs
 
-env = Env(eager=False)
-env.read_env()
-
-
-class Server(Enum):
-    TEST = 1
-    PROD = 2
-
-
-bot_api_key = env("TELEGRAM_BOT_API_KEY")
-whisper_api_key = env("OPENAI_WHISPER_API_KEY")
-allowed_group_ids = env.list("ALLOWED_GROUP_IDS", subcast=int)
-test_group_ids = env.list("TEST_GROUP_IDS", subcast=int)
-SERVER = env.enum("SERVER", type=Server)
-
-env.seal()
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO,
 )
 
 
-def convert_ogg_to_mp3(ogg_file: BytesIO, output_file: t.IO) -> None:
+def convert_ogg_to_mp3(ogg_file: t.BinaryIO, output_file: t.IO[t.Any]) -> None:
     AudioSegment.from_ogg(ogg_file).export(output_file, format="mp3")
 
-
-class ASR(t.Protocol):
-    def transcribe_speech(self, *args, **kwargs) -> str:
-        pass
-
-
-class RateLimiter(t.Protocol):
-    def is_limited(self, *args, **kwargs) -> bool:
-        pass
 
 
 class WhisperASR:
     def __init__(self, api_key: str):
         openai.api_key = api_key
 
-    def transcribe_speech(self, output_voice_file: t.IO) -> str:
+    def transcribe_speech(self, output_voice_file: None | t.IO[t.Any] = None) -> str:
+        if not output_voice_file:
+            message = "Output file is not specified"
+            raise ValueError(message)
         return openai.Audio.transcribe("whisper-1", output_voice_file)["text"]
 
 
 class DummyLimiter:
-    def is_limited(self, *args, **kwargs) -> bool:
+    def is_limited(self: t.Self, **kwargs: t.Unpack[RateLimiterKwargs]) -> bool:
         return False
 
 
 class RateLimiterByTime:
-    def __init__(self, time_limit: timedelta):
+    def __init__(self: t.Self, time_limit: timedelta):
         self.time_limit = time_limit
         self.timestamps: dict[int, datetime] = {}
 
-    def is_limited(self, chat_id: int) -> bool:
+    def is_limited(self: t.Self, chat_id: None | int = None) -> bool:
+        if not chat_id:
+            message = "Char Id is not specified"
+            raise ValueError(message)
         now = datetime.now(tz=UTC)
         last_transcription_time = self.timestamps.get(chat_id)
 
@@ -109,25 +90,27 @@ class VoiceMessageTranscriber:
             f.seek(0)
             temp_output_voice_file = tempfile.NamedTemporaryFile(suffix=".mp3")
             convert_ogg_to_mp3(f, temp_output_voice_file)
-            return self.whisper_asr.transcribe_speech(temp_output_voice_file)
+            return self.whisper_asr.transcribe_speech(output_voice_file=temp_output_voice_file)
 
 
 class VoiceMessageHandler:
     def __init__(
-        self, voice_message_transcriber: VoiceMessageTranscriber,
+        self,
+        voice_message_transcriber: AudioTranscriber[File],
         rate_limiter: RateLimiter,
-        group_filter: GroupFilter):
+        group_filter: GroupFilter,
+    ):
         self.voice_message_transcriber = voice_message_transcriber
         self.rate_limiter = rate_limiter
         self.group_filter = group_filter
 
-    async def handle(self, update: Update, context: CallbackContext) -> None:
+    async def handle(self, update: Update, context: CallbackContext[Bot, str, str, str]) -> None:
         group_id = update.effective_chat.id
         if not self.group_filter.is_allowed(group_id) and not self.group_filter.is_test(group_id):
             await update.message.reply_text("This bot only works in the allowed group.")
             return
 
-        if self.rate_limiter.is_limited(group_id):
+        if self.rate_limiter.is_limited(chat_id=group_id):
             await update.message.reply_text(
                 "You can only transcribe one message per 10 seconds. Please wait.",
                 )
@@ -154,7 +137,7 @@ class TextMessageHandler:
         self.group_filter = group_filter
         self.messages: dict[int, list[dict[str, str]]] = {}
 
-    async def handle(self, update: Update, context: CallbackContext) -> None:
+    async def handle(self, update: Update, context: CallbackContext[Bot, str, str, str]) -> None:
         group_id = update.effective_chat.id
         if not self.group_filter.is_allowed(group_id) and not self.group_filter.is_test(group_id):
             await update.message.reply_text("This bot only works in the allowed group.")
@@ -169,7 +152,7 @@ class TextMessageHandler:
         if not text.startswith(bot_name):
             return
 
-        if self.rate_limiter.is_limited(group_id):
+        if self.rate_limiter.is_limited(chat_id=group_id):
             await update.message.reply_text(
                 "You can only transcribe one message per 10 seconds. Please wait.",
             )
@@ -182,7 +165,7 @@ class TextMessageHandler:
         while True:
             try:
                 response = openai.ChatCompletion.create(
-                    model="gpt-3.5-turbo",
+                    model=settings.model,
                     messages=self.messages[group_id],
                     max_tokens=2048,
                 )
@@ -213,14 +196,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 def main() -> None:
-    if SERVER == Server.TEST:
+    if settings.server is Server.TEST:
         rate_limiter: RateLimiter = DummyLimiter()
     else:
         rate_limiter = RateLimiterByTime(timedelta(seconds=10))
 
-    group_filter = GroupFilter(allowed_group_ids, test_group_ids)
+    group_filter = GroupFilter(settings.allowed_group_ids, settings.test_group_ids)
 
-    whisper_asr = WhisperASR(whisper_api_key)
+    whisper_asr = WhisperASR(settings.whisper_api_key)
     voice_message_transcriber = VoiceMessageTranscriber(whisper_asr)
 
     voice_message_handler = VoiceMessageHandler(
@@ -228,7 +211,7 @@ def main() -> None:
     )
     text_message_handler = TextMessageHandler(rate_limiter, group_filter)
 
-    application = ApplicationBuilder().token(bot_api_key).build()
+    application = ApplicationBuilder().token(settings.bot_api_key).build()
     application.add_handler(MessageHandler(filters.VOICE, voice_message_handler.handle))
     application.add_handler(MessageHandler(filters.TEXT, text_message_handler.handle))
     application.add_handler(CommandHandler("help", help_command))
