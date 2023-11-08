@@ -56,7 +56,7 @@ class RateLimiterByTime:
 
     def is_limited(self: t.Self, chat_id: None | int = None) -> bool:
         if not chat_id:
-            message = "Char Id is not specified"
+            message = "Chat id is not specified"
             raise ValueError(message)
         now = datetime.now(tz=UTC)
         last_transcription_time = self.timestamps.get(chat_id)
@@ -107,7 +107,7 @@ class VoiceMessageHandler:
     async def handle(self, update: Update, context: CallbackContext[Bot, str, str, str]) -> None:
         group_id = update.effective_chat.id
         if not self.group_filter.is_allowed(group_id) and not self.group_filter.is_test(group_id):
-            await update.message.reply_text("This bot only works in the allowed group.")
+            await update.message.reply_text("This bot only works in allowed groups.")
             return
 
         if self.rate_limiter.is_limited(chat_id=group_id):
@@ -140,7 +140,7 @@ class TextMessageHandler:
     async def handle(self, update: Update, context: CallbackContext[Bot, str, str, str]) -> None:
         group_id = update.effective_chat.id
         if not self.group_filter.is_allowed(group_id) and not self.group_filter.is_test(group_id):
-            await update.message.reply_text("This bot only works in the allowed group.")
+            await update.message.reply_text("This bot only works in allowed groups.")
             return
 
         text = update.message.text
