@@ -9,11 +9,11 @@ class RateLimiterKwargs(t.TypedDict, total=False):
 
 
 class ASRKwargs(t.TypedDict):
-    output_voice_file: t.IO[t.Any]
+    output_voice_file: t.BinaryIO
 
 
 class ASR(t.Protocol):
-    def transcribe_speech(self: t.Self, **kwargs: t.Unpack[ASRKwargs]) -> str:
+    async def transcribe(self: t.Self, **kwargs: t.Unpack[ASRKwargs]) -> t.Awaitable:
         ...
 
 
@@ -24,5 +24,5 @@ class RateLimiter(t.Protocol):
 
 
 class AudioTranscriber(t.Protocol[F]):
-    async def transcribe(self: t.Self, file: F) -> str:
+    async def transcribe(self: t.Self, file: F) -> t.Awaitable:
         ...

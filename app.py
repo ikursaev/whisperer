@@ -3,11 +3,11 @@
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 import logging
-import tempfile
 import time
 import typing as t
 
-import openai
+import openai as oai
+
 from pydub import AudioSegment
 from telegram import Bot, File, Update
 from telegram.ext import (
@@ -23,25 +23,20 @@ from config import Server, settings
 from protocols import ASR, AudioTranscriber, RateLimiter, RateLimiterKwargs
 
 
+client = oai.AsyncOpenAI(api_key=settings.whisper_api_key, timeout=10.0)
+
+
+class MessageParam(t.TypedDict, total=False):
+    content: t.Required[str | None]
+    """The contents of the user message."""
+
+    role: t.Required[t.Literal["user", "assistant"]]
+    """The role of the messages author, in this case `user`."""
+
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO,
 )
-
-
-def convert_ogg_to_mp3(ogg_file: t.BinaryIO, output_file: t.IO[t.Any]) -> None:
-    AudioSegment.from_ogg(ogg_file).export(output_file, format="mp3")
-
-
-
-class WhisperASR:
-    def __init__(self, api_key: str):
-        openai.api_key = api_key
-
-    def transcribe_speech(self, output_voice_file: None | t.IO[t.Any] = None) -> str:
-        if not output_voice_file:
-            message = "Output file is not specified"
-            raise ValueError(message)
-        return openai.Audio.transcribe("whisper-1", output_voice_file)["text"]
 
 
 class DummyLimiter:
@@ -80,17 +75,30 @@ class GroupFilter:
         return chat_id in self.test_group_ids
 
 
+def convert_ogg_to_mp3(ogg_file: t.BinaryIO) -> None:
+    AudioSegment.from_ogg(ogg_file).export(ogg_file, format="mp3")
+    ogg_file.name = 'file.mp3'
+
+
+class WhisperASR:
+    async def transcribe(self, output_voice_file: None | t.BinaryIO = None):
+        if not output_voice_file:
+            message = "Output file is not specified"
+            raise ValueError(message)
+        return await client.audio.transcriptions.create(model="whisper-1", file=output_voice_file)
+
+
 class VoiceMessageTranscriber:
     def __init__(self, whisper_asr: ASR):
         self.whisper_asr = whisper_asr
 
-    async def transcribe(self, file: File) -> str:
-        with BytesIO() as f:
-            await file.download_to_memory(out=f)
-            f.seek(0)
-            temp_output_voice_file = tempfile.NamedTemporaryFile(suffix=".mp3")
-            convert_ogg_to_mp3(f, temp_output_voice_file)
-            return self.whisper_asr.transcribe_speech(output_voice_file=temp_output_voice_file)
+    async def transcribe(self, file: File) -> t.Awaitable:
+        with BytesIO() as temp_file:
+            await file.download_to_memory(out=temp_file)
+            temp_file.seek(0)
+            convert_ogg_to_mp3(temp_file)
+            return await self.whisper_asr.transcribe(output_voice_file=temp_file)
+
 
 
 class VoiceMessageHandler:
@@ -123,7 +131,7 @@ class VoiceMessageHandler:
         file = await context.bot.get_file(voice.file_id)
         try:
             transcription = await self.voice_message_transcriber.transcribe(file)
-            await update.message.reply_text(transcription)
+            await update.message.reply_text(transcription.text)
         except Exception:
             logging.exception("Error transcribing speech")
             await update.message.reply_text(
@@ -135,7 +143,7 @@ class TextMessageHandler:
     def __init__(self, rate_limiter: RateLimiter, group_filter: GroupFilter):
         self.rate_limiter = rate_limiter
         self.group_filter = group_filter
-        self.messages: dict[int, list[dict[str, str]]] = {}
+        self.messages: dict[int, list[MessageParam]] = {}
 
     async def handle(self, update: Update, context: CallbackContext[Bot, str, str, str]) -> None:
         group_id = update.effective_chat.id
@@ -159,17 +167,17 @@ class TextMessageHandler:
             return
 
         text = text.removeprefix(bot_name)
-
-        self.messages.setdefault(group_id, []).append({"role": "user", "content": text})
+        user_message: MessageParam = {"role": "user", "content": text}
+        self.messages.setdefault(group_id, []).append(user_message)
 
         while True:
             try:
-                response = openai.ChatCompletion.create(
+                response = await client.chat.completions.create(
                     model=settings.model,
                     messages=self.messages[group_id],
-                    max_tokens=2048,
+                    max_tokens=1024,
                 )
-            except openai.error.InvalidRequestError:
+            except oai.BadRequestError:
                 logging.exception(
                     "Context is too big. Number of messages: %s", len(self.messages[group_id]),
                 )
@@ -182,9 +190,11 @@ class TextMessageHandler:
                 )
                 return
             else:
-                content = response.to_dict()["choices"][0]["message"]["content"]
-                self.messages[group_id].append({"role": "assistant", "content": content})
-                await update.message.reply_text(content)
+                content = response.choices[0].message.content
+                assistant_message: MessageParam = {"role": "assistant", "content": content}
+                self.messages[group_id].append(assistant_message)
+                if content is not None:
+                    await update.message.reply_text(content)
                 return
 
 
@@ -203,7 +213,7 @@ def main() -> None:
 
     group_filter = GroupFilter(settings.allowed_group_ids, settings.test_group_ids)
 
-    whisper_asr = WhisperASR(settings.whisper_api_key)
+    whisper_asr = WhisperASR()
     voice_message_transcriber = VoiceMessageTranscriber(whisper_asr)
 
     voice_message_handler = VoiceMessageHandler(
