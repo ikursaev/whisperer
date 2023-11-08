@@ -23,7 +23,7 @@ from config import Server, settings
 from protocols import ASR, AudioTranscriber, RateLimiter, RateLimiterKwargs
 
 
-client = oai.AsyncOpenAI(api_key=settings.whisper_api_key, timeout=10.0)
+client = oai.AsyncOpenAI(api_key=settings.whisper_api_key)
 
 
 class MessageParam(t.TypedDict, total=False):
