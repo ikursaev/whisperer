@@ -4,12 +4,11 @@ import base64
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 import logging
-import time
 import typing as t
 
 import openai as oai
 from pydub import AudioSegment
-from telegram import Bot, File, Update
+from telegram import Bot, File, Update, Message
 from telegram.ext import (
     ApplicationBuilder,
     CallbackContext,
@@ -138,14 +137,32 @@ class VoiceMessageHandler:
             )
 
 
-class TextMessageHandler:
-    def __init__(self, rate_limiter: RateLimiter):
-        self.rate_limiter = rate_limiter
-        self.messages: dict[int, list[MessageParam]] = {}
+class MessageCollector:
+    def __init__(self) -> None:
+        self._collector: dict[int, list[MessageParam]] = {}
         self.encoding = tiktoken.encoding_for_model(settings.model)
 
-    def encode_image(self: t.Self, image: BytesIO) -> str:
-        return base64.b64encode(image.read()).decode("utf-8")
+    def add(self, chat_id: int, message: MessageParam) -> None:
+        self._collector.setdefault(chat_id, []).append(message)
+        self.limit_num_tokens(chat_id)
+
+    def get(self, chat_id:int, index: int = 0) -> MessageParam:
+        if not self._collector:
+            error = "The collector is empty!"
+            raise IndexError(error)
+        return self._collector[chat_id][index]
+
+    def list(self, chat_id:int) -> list[MessageParam]:
+        if chat_id not in self._collector:
+            error = "The collector for this chat is empty!"
+            raise ValueError(error)
+        return self._collector[chat_id]
+
+    def pop(self, chat_id: int, index: int = 0) -> MessageParam:
+        if chat_id not in self._collector:
+            error = "The collector for this chat is empty!"
+            raise ValueError(error)
+        return self._collector[chat_id].pop(index)
 
     def get_num_tokens(self: t.Self, string: str | None) -> int:
         """Returns the number of tokens in a text string."""
@@ -153,41 +170,33 @@ class TextMessageHandler:
             return 0
         return len(self.encoding.encode(string))
 
-    def get_total_text_tokens(self: t.Self, messages: list[MessageParam]) -> int:
+    def get_total_tokens(self: t.Self, chat_id: int) -> int:
         num_tokens = 0
-        for m in messages:
+        for m in self.list(chat_id):
             for content in m["content"]:
                 if content["type"] == "text":
                     num_tokens += self.get_num_tokens(content["text"])
                     break
         return num_tokens
 
-    def check_num_text_tokens(self: t.Self, messages: list[MessageParam]) -> None:
-        total_tokens = self.get_total_text_tokens(messages)
+    def limit_num_tokens(self: t.Self, chat_id: int) -> None:
+        total_tokens = self.get_total_tokens(chat_id)
         while total_tokens > settings.max_input_tokens:
-            earliest_message_contents = messages.pop(0)["content"]
+            earliest_message_contents = self.pop(chat_id, 0)["content"]
             for content in earliest_message_contents:
                 if content["type"] == "text":
                     total_tokens -= self.get_num_tokens(content["text"])
                     break
 
-    async def handle(self, update: Update, context: CallbackContext[Bot, str, str, str]) -> None:
-        group_id = update.effective_chat.id
-        message = update.message
 
-        if self.rate_limiter.is_limited(chat_id=group_id):
-            await message.reply_text(
-                "You can only transcribe one message per 10 seconds. Please wait.",
-            )
-            return
+class TextMessageHandler:
+    def __init__(self, messages: MessageCollector, rate_limiter: RateLimiter):
+        self.rate_limiter = rate_limiter
+        self.messages = messages
 
+    def is_message_for_bot(self, bot_name: str, message: Message) -> bool:
         text: str = message.text
-        photo = message.photo
-        if not text and not photo:
-            return
-
-        bot_name = update.get_bot().name
-        is_bot_mentioned = text.startswith(bot_name)
+        is_bot_mentioned = text is not None and text.startswith(bot_name) or message.photo
         is_reply_to_bot = False
         is_reply_to_whisperer = False
 
@@ -195,56 +204,66 @@ class TextMessageHandler:
             is_reply_to_bot = reply.from_user.is_bot
             is_reply_to_whisperer = reply.from_user.username == bot_name[1:]
 
-        if not is_bot_mentioned and not (is_reply_to_bot or is_reply_to_whisperer):
+        return is_bot_mentioned or is_reply_to_bot and is_reply_to_whisperer
+
+    async def encode_image(self: t.Self, image: BytesIO) -> str:
+        return base64.b64encode(image.read()).decode("utf-8")
+
+    async def handle(self, update: Update, context: CallbackContext[Bot, str, str, str]) -> None:
+        group_id = update.effective_chat.id
+        message: Message = update.message
+
+        if self.rate_limiter.is_limited(chat_id=group_id):
+            await message.reply_text(
+                "You can only transcribe one message per 10 seconds. Please wait.",
+            )
             return
 
-        text = text.removeprefix(bot_name)
-        message_content: list[TextContent|ImageContent] = [{"type": "text", "text": text}]
+        message_content: list[TextContent|ImageContent] = []
+        bot_name = update.get_bot().name
+        if not self.is_message_for_bot(bot_name, message):
+            return
 
-        if photo:
-            file = update.message.photo[-1].file_id
-            obj = await context.bot.get_file(file)
-            image =  BytesIO(await obj.download_as_bytearray())
-            base64_image = self.encode_image(image)
-            logging.info(base64_image)
+        if photo := message.photo:
+            file_id = photo[-1].file_id
+            file = await context.bot.get_file(file_id)
+            image =  BytesIO(await file.download_as_bytearray())
+            base64_image = await self.encode_image(image)
+            text: str = message.caption
+            text = text.removeprefix(bot_name)
+            message_content.append({"type": "text", "text": text})
             image_content: ImageContent = {
                 "type": "image_url",
                 "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
             }
             message_content.append(image_content)
+        elif text := message.text:
+            text = text.removeprefix(bot_name)
+            message_content.append({"type": "text", "text": text})
 
         user_message: MessageParam = {"role": "user", "content": message_content}
-        self.messages.setdefault(group_id, []).append(user_message)
+        self.messages.add(group_id, user_message)
 
-        self.check_num_text_tokens(self.messages[group_id])
-
-        while True:
-            try:
-                response = await client.chat.completions.create(
-                    model=settings.model,
-                    messages=self.messages[group_id],
-                    max_tokens=settings.max_output_tokens,
-                )
-            except oai.BadRequestError:
-                logging.exception(
-                    "Context is too big. Number of messages: %s",
-                    len(self.messages[group_id]),
-                )
-                self.messages[group_id].pop(0)
-                time.sleep(0.5)
-            except Exception:
-                logging.exception("Error getting ChatGPT response")
-                await update.message.reply_text(
-                    "An error occurred while getting response from OpenAI API. Please try again.",
-                )
-                return
-            else:
-                content = response.choices[0].message.content
-                assistant_message: MessageParam = {"role": "assistant", "content": content}
-                self.messages[group_id].append(assistant_message)
-                if content is not None:
-                    await message.reply_text(content)
-                return
+        try:
+            response = await client.chat.completions.create(
+                model=settings.model,
+                messages=self.messages.list(group_id),
+                max_tokens=settings.max_output_tokens,
+            )
+        except Exception:
+            logging.exception("Error getting ChatGPT response")
+            await update.message.reply_text(
+                "An error occurred while getting response from OpenAI API. Please try again.",
+            )
+            return
+        else:
+            content: str = response.choices[0].message.content
+            contents: TextContent = {"type": "text", "text": content}
+            assistant_message: MessageParam = {"role": "assistant", "content": [contents]}
+            self.messages.add(group_id, assistant_message)
+            if content is not None:
+                await message.reply_text(content)
+            return
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -263,20 +282,19 @@ def main() -> None:
     whisper_asr = WhisperASR()
     voice_message_transcriber = VoiceMessageTranscriber(whisper_asr)
 
-    voice_message_handler = VoiceMessageHandler(
-        voice_message_transcriber,
-        rate_limiter,
-    )
-    text_message_handler = TextMessageHandler(rate_limiter)
+    voice_message_handler = VoiceMessageHandler(voice_message_transcriber,rate_limiter)
+    message_collector = MessageCollector()
+    text_message_handler = TextMessageHandler(message_collector, rate_limiter)
 
     application = ApplicationBuilder().token(settings.bot_api_key).build()
     application.add_handler(MessageHandler(
         filters.VOICE & filters.Chat(chat_id=settings.allowed_group_ids+settings.test_group_ids),
-        voice_message_handler.handle
+        voice_message_handler.handle,
     ))
     application.add_handler(MessageHandler(
-        (filters.PHOTO | filters.TEXT) & filters.Chat(chat_id=settings.allowed_group_ids+settings.test_group_ids),
-        text_message_handler.handle
+        (filters.TEXT | filters.PHOTO)
+        & filters.Chat(chat_id=settings.allowed_group_ids+settings.test_group_ids),
+        text_message_handler.handle,
     ))
     application.add_handler(CommandHandler("help", help_command))
 
