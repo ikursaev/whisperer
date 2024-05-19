@@ -1,3 +1,5 @@
 [whisperer]
 model="gpt-4o"
 server="TEST"
+max_input_tokens = 4096
+max_output_tokens = 4096

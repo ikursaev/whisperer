@@ -16,6 +16,8 @@ class _Settings:
     test_group_ids: list[int] = ts.secret()
     model: str
     server: Server
+    max_input_tokens: int
+    max_output_tokens: int
 
 settings = ts.load(
     cls=_Settings, appname="whisperer", config_files=["settings.toml", ".secrets.toml"],
