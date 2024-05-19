@@ -51,7 +51,7 @@ class RateLimiterByTime:
         self.time_limit = time_limit
         self.timestamps: dict[int, datetime] = {}
 
-    def is_limited(self: t.Self, chat_id: None | int = None) -> bool|None:
+    def is_limited(self: t.Self, chat_id: None | int = None) -> bool | None:
         if not chat_id:
             logging.exception("Chat id is not specified")
             return True
@@ -171,7 +171,10 @@ class TextMessageHandler:
             return
 
         bot_name = update.get_bot().name
-        if not text.startswith(bot_name):
+        is_bot_mentioned = text.startswith(bot_name)
+        is_reply_to_bot = update.message.reply_to_message.from_user.is_bot
+        is_reply_to_whisperer = update.message.reply_to_message.from_user.username == bot_name[1:]
+        if not is_bot_mentioned and not (is_reply_to_bot and is_reply_to_whisperer):
             return
 
         if self.rate_limiter.is_limited(chat_id=group_id):
