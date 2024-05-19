@@ -1,5 +1,6 @@
 """Telegram Whisperer bot."""
 
+import base64
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 import logging
@@ -26,8 +27,22 @@ from protocols import ASR, AudioTranscriber, RateLimiter, RateLimiterKwargs
 client = oai.AsyncOpenAI(api_key=settings.whisper_api_key)
 
 
+class ImageUrl(t.TypedDict):
+    url: str
+
+
+class TextContent(t.TypedDict):
+    type: t.Required[t.Literal["text"]]
+    text: str
+
+
+class ImageContent(t.TypedDict):
+    type: t.Required[t.Literal["image_url"]]
+    image_url: ImageUrl
+
+
 class MessageParam(t.TypedDict, total=False):
-    content: t.Required[str | None]
+    content: t.Required[list[TextContent|ImageContent]]
     """The contents of the user message."""
 
     role: t.Required[t.Literal["user", "assistant"]]
@@ -36,7 +51,7 @@ class MessageParam(t.TypedDict, total=False):
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+    level=logging.DEBUG,
     filename="whisperer.log",
 )
 
@@ -47,11 +62,11 @@ class DummyLimiter:
 
 
 class RateLimiterByTime:
-    def __init__(self: t.Self, time_limit: timedelta):
+    def __init__(self, time_limit: timedelta):
         self.time_limit = time_limit
         self.timestamps: dict[int, datetime] = {}
 
-    def is_limited(self: t.Self, chat_id: None | int = None) -> bool | None:
+    def is_limited(self: t.Self, chat_id: int | None = None) -> bool:
         if not chat_id:
             logging.exception("Chat id is not specified")
             return True
@@ -65,25 +80,13 @@ class RateLimiterByTime:
         return False
 
 
-class GroupFilter:
-    def __init__(self, allowed_group_ids: list[int], test_group_ids: list[int]):
-        self.allowed_group_ids = allowed_group_ids
-        self.test_group_ids = test_group_ids
-
-    def is_allowed(self, chat_id: int) -> bool:
-        return chat_id in self.allowed_group_ids
-
-    def is_test(self, chat_id: int) -> bool:
-        return chat_id in self.test_group_ids
-
-
 def convert_ogg_to_mp3(ogg_file: t.BinaryIO) -> None:
     AudioSegment.from_ogg(ogg_file).export(ogg_file, format="mp3")
     ogg_file.name = "file.mp3"
 
 
 class WhisperASR:
-    async def transcribe(self, output_voice_file: None | t.BinaryIO = None):
+    async def transcribe(self, output_voice_file: None | t.BinaryIO = None) -> oai.types.audio.Transcription:
         if not output_voice_file:
             logging.exception("Error transcribing speech. Output file is not specified")
             return None
@@ -107,17 +110,12 @@ class VoiceMessageHandler:
         self,
         voice_message_transcriber: AudioTranscriber[File],
         rate_limiter: RateLimiter,
-        group_filter: GroupFilter,
     ):
         self.voice_message_transcriber = voice_message_transcriber
         self.rate_limiter = rate_limiter
-        self.group_filter = group_filter
 
     async def handle(self, update: Update, context: CallbackContext[Bot, str, str, str]) -> None:
         group_id = update.effective_chat.id
-        if not self.group_filter.is_allowed(group_id) and not self.group_filter.is_test(group_id):
-            await update.message.reply_text("This bot only works in allowed groups.")
-            return
 
         if self.rate_limiter.is_limited(chat_id=group_id):
             await update.message.reply_text(
@@ -141,11 +139,13 @@ class VoiceMessageHandler:
 
 
 class TextMessageHandler:
-    def __init__(self, rate_limiter: RateLimiter, group_filter: GroupFilter):
+    def __init__(self, rate_limiter: RateLimiter):
         self.rate_limiter = rate_limiter
-        self.group_filter = group_filter
         self.messages: dict[int, list[MessageParam]] = {}
         self.encoding = tiktoken.encoding_for_model(settings.model)
+
+    def encode_image(self: t.Self, image: BytesIO) -> str:
+        return base64.b64encode(image.read()).decode("utf-8")
 
     def get_num_tokens(self: t.Self, string: str | None) -> int:
         """Returns the number of tokens in a text string."""
@@ -153,41 +153,69 @@ class TextMessageHandler:
             return 0
         return len(self.encoding.encode(string))
 
-    def check_num_tokens(self: t.Self, messages: list[MessageParam]) -> None:
-        num_tokens = sum(self.get_num_tokens(c) for m in messages if (c := m["content"]))
-        while num_tokens > settings.max_input_tokens:
-            earliest_message = messages.pop(0)["content"]
-            num_tokens -= self.get_num_tokens(earliest_message)
+    def get_total_text_tokens(self: t.Self, messages: list[MessageParam]) -> int:
+        num_tokens = 0
+        for m in messages:
+            for content in m["content"]:
+                if content["type"] == "text":
+                    num_tokens += self.get_num_tokens(content["text"])
+                    break
+        return num_tokens
+
+    def check_num_text_tokens(self: t.Self, messages: list[MessageParam]) -> None:
+        total_tokens = self.get_total_text_tokens(messages)
+        while total_tokens > settings.max_input_tokens:
+            earliest_message_contents = messages.pop(0)["content"]
+            for content in earliest_message_contents:
+                if content["type"] == "text":
+                    total_tokens -= self.get_num_tokens(content["text"])
+                    break
 
     async def handle(self, update: Update, context: CallbackContext[Bot, str, str, str]) -> None:
         group_id = update.effective_chat.id
-        if not self.group_filter.is_allowed(group_id) and not self.group_filter.is_test(group_id):
-            await update.message.reply_text("This bot only works with allowed groups.")
-            return
-
-        text = update.message.text
-
-        if not text:
-            return
-
-        bot_name = update.get_bot().name
-        is_bot_mentioned = text.startswith(bot_name)
-        is_reply_to_bot = update.message.reply_to_message.from_user.is_bot
-        is_reply_to_whisperer = update.message.reply_to_message.from_user.username == bot_name[1:]
-        if not is_bot_mentioned and not (is_reply_to_bot and is_reply_to_whisperer):
-            return
+        message = update.message
 
         if self.rate_limiter.is_limited(chat_id=group_id):
-            await update.message.reply_text(
+            await message.reply_text(
                 "You can only transcribe one message per 10 seconds. Please wait.",
             )
             return
 
+        text: str = message.text
+        photo = None
+        # photo = message.photo
+        if not text and not photo:
+            return
+
+        bot_name = update.get_bot().name
+        is_bot_mentioned = text.startswith(bot_name)
+        is_reply_to_bot = False
+        is_reply_to_whisperer = False
+
+        if reply := message.reply_to_message:
+            is_reply_to_bot = reply.from_user.is_bot
+            is_reply_to_whisperer = reply.from_user.username == bot_name[1:]
+
+        if not is_bot_mentioned and not (is_reply_to_bot or is_reply_to_whisperer):
+            return
+
         text = text.removeprefix(bot_name)
-        user_message: MessageParam = {"role": "user", "content": text}
+        message_content: list[TextContent|ImageContent] = [{"type": "text", "text": text}]
+
+        if photo:
+            image = message.media
+            base64_image = self.encode_image(image)
+            logging.info(base64_image)
+            image_content: ImageContent = {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
+            }
+            message_content.append(image_content)
+
+        user_message: MessageParam = {"role": "user", "content": message_content}
         self.messages.setdefault(group_id, []).append(user_message)
 
-        self.check_num_tokens(self.messages[group_id])
+        self.check_num_text_tokens(self.messages[group_id])
 
         while True:
             try:
@@ -206,7 +234,7 @@ class TextMessageHandler:
             except Exception:
                 logging.exception("Error getting ChatGPT response")
                 await update.message.reply_text(
-                    "An error occurred while getting response from ChatGPT. Please try again.",
+                    "An error occurred while getting response from OpenAI API. Please try again.",
                 )
                 return
             else:
@@ -214,7 +242,7 @@ class TextMessageHandler:
                 assistant_message: MessageParam = {"role": "assistant", "content": content}
                 self.messages[group_id].append(assistant_message)
                 if content is not None:
-                    await update.message.reply_text(content)
+                    await message.reply_text(content)
                 return
 
 
@@ -231,21 +259,24 @@ def main() -> None:
     else:
         rate_limiter = RateLimiterByTime(timedelta(seconds=10))
 
-    group_filter = GroupFilter(settings.allowed_group_ids, settings.test_group_ids)
-
     whisper_asr = WhisperASR()
     voice_message_transcriber = VoiceMessageTranscriber(whisper_asr)
 
     voice_message_handler = VoiceMessageHandler(
         voice_message_transcriber,
         rate_limiter,
-        group_filter,
     )
-    text_message_handler = TextMessageHandler(rate_limiter, group_filter)
+    text_message_handler = TextMessageHandler(rate_limiter)
 
     application = ApplicationBuilder().token(settings.bot_api_key).build()
-    application.add_handler(MessageHandler(filters.VOICE, voice_message_handler.handle))
-    application.add_handler(MessageHandler(filters.TEXT, text_message_handler.handle))
+    application.add_handler(MessageHandler(
+        filters.VOICE & filters.Chat(chat_id=settings.allowed_group_ids+settings.test_group_ids),
+        voice_message_handler.handle
+    ))
+    application.add_handler(MessageHandler(
+        filters.TEXT & filters.Chat(chat_id=settings.allowed_group_ids+settings.test_group_ids),
+        text_message_handler.handle
+    ))
     application.add_handler(CommandHandler("help", help_command))
 
     application.run_polling()

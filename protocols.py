@@ -1,11 +1,11 @@
 import typing as t
 
 
-F = t.TypeVar("F", contravariant=True)
+F_contra = t.TypeVar("F", contravariant=True)
 
 
 class RateLimiterKwargs(t.TypedDict, total=False):
-    chat_id: int
+    chat_id: int | None
 
 
 class ASRKwargs(t.TypedDict):
@@ -23,6 +23,6 @@ class RateLimiter(t.Protocol):
         ...
 
 
-class AudioTranscriber(t.Protocol[F]):
-    async def transcribe(self: t.Self, file: F) -> t.Awaitable:
+class AudioTranscriber(t.Protocol[F_contra]):
+    async def transcribe(self: t.Self, file: F_contra) -> t.Awaitable:
         ...
