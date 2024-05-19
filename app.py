@@ -182,8 +182,7 @@ class TextMessageHandler:
             return
 
         text: str = message.text
-        photo = None
-        # photo = message.photo
+        photo = message.photo
         if not text and not photo:
             return
 
@@ -203,7 +202,9 @@ class TextMessageHandler:
         message_content: list[TextContent|ImageContent] = [{"type": "text", "text": text}]
 
         if photo:
-            image = message.media
+            file = update.message.photo[-1].file_id
+            obj = await context.bot.get_file(file)
+            image =  BytesIO(await obj.download_as_bytearray())
             base64_image = self.encode_image(image)
             logging.info(base64_image)
             image_content: ImageContent = {
@@ -274,7 +275,7 @@ def main() -> None:
         voice_message_handler.handle
     ))
     application.add_handler(MessageHandler(
-        filters.TEXT & filters.Chat(chat_id=settings.allowed_group_ids+settings.test_group_ids),
+        (filters.PHOTO | filters.TEXT) & filters.Chat(chat_id=settings.allowed_group_ids+settings.test_group_ids),
         text_message_handler.handle
     ))
     application.add_handler(CommandHandler("help", help_command))
