@@ -224,22 +224,20 @@ class TextMessageHandler:
         if not self.is_message_for_bot(bot_name, message):
             return
 
+        text = message.text or message.caption
+        text = text.removeprefix(bot_name)
+        message_content.append({"type": "text", "text": text})
+
         if photo := message.photo:
             file_id = photo[-1].file_id
             file = await context.bot.get_file(file_id)
             image =  BytesIO(await file.download_as_bytearray())
             base64_image = await self.encode_image(image)
-            text: str = message.caption
-            text = text.removeprefix(bot_name)
-            message_content.append({"type": "text", "text": text})
             image_content: ImageContent = {
                 "type": "image_url",
                 "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
             }
             message_content.append(image_content)
-        elif text := message.text:
-            text = text.removeprefix(bot_name)
-            message_content.append({"type": "text", "text": text})
 
         user_message: MessageParam = {"role": "user", "content": message_content}
         self.messages.add(group_id, user_message)
