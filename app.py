@@ -195,8 +195,8 @@ class TextMessageHandler:
         self.messages = messages
 
     def is_message_for_bot(self, bot_name: str, message: Message) -> bool:
-        text: str = message.text
-        is_bot_mentioned = text is not None and text.startswith(bot_name) or message.photo
+        text: str = message.text or message.caption
+        is_bot_mentioned = text.startswith(bot_name)
         is_reply_to_bot = False
         is_reply_to_whisperer = False
 
