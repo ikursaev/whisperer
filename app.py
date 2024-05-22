@@ -4,11 +4,13 @@ import base64
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 import logging
+from logging import handlers
+import time
 import typing as t
 
 import openai as oai
 from pydub import AudioSegment
-from telegram import Bot, File, Update, Message
+from telegram import Bot, File, Message, Update
 from telegram.ext import (
     ApplicationBuilder,
     CallbackContext,
@@ -41,18 +43,23 @@ class ImageContent(t.TypedDict):
 
 
 class MessageParam(t.TypedDict, total=False):
-    content: t.Required[list[TextContent|ImageContent]]
+    content: t.Required[list[TextContent | ImageContent]]
     """The contents of the user message."""
 
     role: t.Required[t.Literal["user", "assistant"]]
     """The role of the messages author, in this case `user`."""
 
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.DEBUG,
-    filename="whisperer.log",
+log_handler = handlers.RotatingFileHandler("whisperer.log", maxBytes=1_048_576, backupCount=5)
+formatter = logging.Formatter(
+    "%(asctime)s program_name [%(process)d]: %(message)s",
+    "%b %d %H:%M:%S",
 )
+formatter.converter = time.gmtime  # if you want UTC time
+log_handler.setFormatter(formatter)
+logger = logging.getLogger()
+logger.addHandler(log_handler)
+logger.setLevel(logging.DEBUG)
 
 
 class DummyLimiter:
@@ -67,7 +74,7 @@ class RateLimiterByTime:
 
     def is_limited(self: t.Self, chat_id: int | None = None) -> bool:
         if not chat_id:
-            logging.exception("Chat id is not specified")
+            logger.exception("Chat id is not specified")
             return True
         now = datetime.now(tz=UTC)
         last_transcription_time = self.timestamps.get(chat_id)
@@ -85,9 +92,11 @@ def convert_ogg_to_mp3(ogg_file: t.BinaryIO) -> None:
 
 
 class WhisperASR:
-    async def transcribe(self, output_voice_file: None | t.BinaryIO = None) -> oai.types.audio.Transcription:
+    async def transcribe(
+        self, output_voice_file: None | t.BinaryIO = None
+    ) -> oai.types.audio.Transcription:
         if not output_voice_file:
-            logging.exception("Error transcribing speech. Output file is not specified")
+            logger.exception("Error transcribing speech. Output file is not specified")
             return None
         return await client.audio.transcriptions.create(model="whisper-1", file=output_voice_file)
 
@@ -131,7 +140,7 @@ class VoiceMessageHandler:
             transcription = await self.voice_message_transcriber.transcribe(file)
             await update.message.reply_text(transcription.text)
         except Exception:
-            logging.exception("Error transcribing speech")
+            logger.exception("Error transcribing speech")
             await update.message.reply_text(
                 "An error occurred while transcribing your message. Please try again.",
             )
@@ -146,13 +155,13 @@ class MessageCollector:
         self._collector.setdefault(chat_id, []).append(message)
         self.limit_num_tokens(chat_id)
 
-    def get(self, chat_id:int, index: int = 0) -> MessageParam:
+    def get(self, chat_id: int, index: int = 0) -> MessageParam:
         if not self._collector:
             error = "The collector is empty!"
             raise IndexError(error)
         return self._collector[chat_id][index]
 
-    def list(self, chat_id:int) -> list[MessageParam]:
+    def list(self, chat_id: int) -> list[MessageParam]:
         if chat_id not in self._collector:
             error = "The collector for this chat is empty!"
             raise ValueError(error)
@@ -219,7 +228,7 @@ class TextMessageHandler:
             )
             return
 
-        message_content: list[TextContent|ImageContent] = []
+        message_content: list[TextContent | ImageContent] = []
         bot_name = update.get_bot().name
         if not self.is_message_for_bot(bot_name, message):
             return
@@ -231,7 +240,7 @@ class TextMessageHandler:
         if photo := message.photo:
             file_id = photo[-1].file_id
             file = await context.bot.get_file(file_id)
-            image =  BytesIO(await file.download_as_bytearray())
+            image = BytesIO(await file.download_as_bytearray())
             base64_image = await self.encode_image(image)
             image_content: ImageContent = {
                 "type": "image_url",
@@ -249,7 +258,7 @@ class TextMessageHandler:
                 max_tokens=settings.max_output_tokens,
             )
         except Exception:
-            logging.exception("Error getting ChatGPT response")
+            logger.exception("Error getting ChatGPT response")
             await update.message.reply_text(
                 "An error occurred while getting response from OpenAI API. Please try again.",
             )
@@ -280,20 +289,25 @@ def main() -> None:
     whisper_asr = WhisperASR()
     voice_message_transcriber = VoiceMessageTranscriber(whisper_asr)
 
-    voice_message_handler = VoiceMessageHandler(voice_message_transcriber,rate_limiter)
+    voice_message_handler = VoiceMessageHandler(voice_message_transcriber, rate_limiter)
     message_collector = MessageCollector()
     text_message_handler = TextMessageHandler(message_collector, rate_limiter)
 
     application = ApplicationBuilder().token(settings.bot_api_key).build()
-    application.add_handler(MessageHandler(
-        filters.VOICE & filters.Chat(chat_id=settings.allowed_group_ids+settings.test_group_ids),
-        voice_message_handler.handle,
-    ))
-    application.add_handler(MessageHandler(
-        (filters.TEXT | filters.PHOTO)
-        & filters.Chat(chat_id=settings.allowed_group_ids+settings.test_group_ids),
-        text_message_handler.handle,
-    ))
+    application.add_handler(
+        MessageHandler(
+            filters.VOICE
+            & filters.Chat(chat_id=settings.allowed_group_ids + settings.test_group_ids),
+            voice_message_handler.handle,
+        )
+    )
+    application.add_handler(
+        MessageHandler(
+            (filters.TEXT | filters.PHOTO)
+            & filters.Chat(chat_id=settings.allowed_group_ids + settings.test_group_ids),
+            text_message_handler.handle,
+        )
+    )
     application.add_handler(CommandHandler("help", help_command))
 
     application.run_polling()
