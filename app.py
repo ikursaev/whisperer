@@ -206,9 +206,9 @@ class TextMessageHandler:
     def is_message_for_bot(self, bot_name: str, message: Message) -> bool:
         text: str = message.text or message.caption
         is_bot_mentioned = text.startswith(bot_name)
+
         is_reply_to_bot = False
         is_reply_to_whisperer = False
-
         if reply := message.reply_to_message:
             is_reply_to_bot = reply.from_user.is_bot
             is_reply_to_whisperer = reply.from_user.username == bot_name[1:]
@@ -228,10 +228,12 @@ class TextMessageHandler:
             )
             return
 
-        message_content: list[TextContent | ImageContent] = []
         bot_name = update.get_bot().name
+
         if not self.is_message_for_bot(bot_name, message):
             return
+
+        message_content: list[TextContent | ImageContent] = []
 
         text = message.text or message.caption
         text = text.removeprefix(bot_name)
