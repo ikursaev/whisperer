@@ -255,7 +255,7 @@ class TextMessageHandler:
             else:
                 sys_message: MessageParam = {"role": "system", "content": text.strip().removeprefix("system:")}
                 self.messages.add(group_id, sys_message)
-                await message.reply_text("New system prompt has been adopted.")
+            await message.reply_text("New system prompt has been adopted.")
             return
 
         message_content.append({"type": "text", "text": text})
