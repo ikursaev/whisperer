@@ -50,16 +50,16 @@ class MessageParam(t.TypedDict, total=False):
     """The role of the messages author, in this case `user`."""
 
 
-log_handler = handlers.RotatingFileHandler("whisperer.log", maxBytes=1_048_576, backupCount=5)
-formatter = logging.Formatter(
-    "%(asctime)s program_name [%(process)d]: %(message)s",
-    "%b %d %H:%M:%S",
-)
-formatter.converter = time.gmtime  # if you want UTC time
-log_handler.setFormatter(formatter)
+# log_handler = handlers.RotatingFileHandler("whisperer.log", maxBytes=1_048_576, backupCount=5)
+# formatter = logging.Formatter(
+#     "%(asctime)s program_name [%(process)d]: %(message)s",
+#     "%b %d %H:%M:%S",
+# )
+# formatter.converter = time.gmtime  # if you want UTC time
+# log_handler.setFormatter(formatter)
 logger = logging.getLogger()
-logger.addHandler(log_handler)
-logger.setLevel(logging.DEBUG)
+# logger.addHandler(log_handler)
+# logger.setLevel(logging.DEBUG)
 
 
 class DummyLimiter:
