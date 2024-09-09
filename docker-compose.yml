@@ -11,6 +11,8 @@ services:
     restart: unless-stopped
     logging:
       driver: syslog
+    volumes:
+      - /dev/log:/dev/log
 secrets:
   .secrets.toml:
     file: .secrets.toml
