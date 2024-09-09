@@ -43,10 +43,10 @@ class ImageContent(t.TypedDict):
 
 
 class MessageParam(t.TypedDict, total=False):
-    content: t.Required[list[TextContent | ImageContent]]
+    content: t.Required[list[TextContent | ImageContent] | str]
     """The contents of the user message."""
 
-    role: t.Required[t.Literal["user", "assistant"]]
+    role: t.Required[t.Literal["user", "assistant", "system"]]
     """The role of the messages author, in this case `user`."""
 
 
@@ -150,30 +150,30 @@ class VoiceMessageHandler:
 
 class MessageCollector:
     def __init__(self) -> None:
-        self._collector: dict[int, list[MessageParam]] = {}
+        self.collector: dict[int, list[MessageParam]] = {}
         self.encoding = tiktoken.encoding_for_model(settings.model)
 
     def add(self, chat_id: int, message: MessageParam) -> None:
-        self._collector.setdefault(chat_id, []).append(message)
+        self.collector.setdefault(chat_id, []).append(message)
         self.limit_num_tokens(chat_id)
 
     def get(self, chat_id: int, index: int = 0) -> MessageParam:
-        if not self._collector:
+        if not self.collector:
             error = "The collector is empty!"
             raise IndexError(error)
-        return self._collector[chat_id][index]
+        return self.collector[chat_id][index]
 
     def list(self, chat_id: int) -> list[MessageParam]:
-        if chat_id not in self._collector:
+        if chat_id not in self.collector:
             error = "The collector for this chat is empty!"
             raise ValueError(error)
-        return self._collector[chat_id]
+        return self.collector[chat_id]
 
     def pop(self, chat_id: int, index: int = 0) -> MessageParam:
-        if chat_id not in self._collector:
+        if chat_id not in self.collector:
             error = "The collector for this chat is empty!"
             raise ValueError(error)
-        return self._collector[chat_id].pop(index)
+        return self.collector[chat_id].pop(index)
 
     def get_num_tokens(self: t.Self, string: str | None) -> int:
         """Returns the number of tokens in a text string."""
@@ -184,10 +184,13 @@ class MessageCollector:
     def get_total_tokens(self: t.Self, chat_id: int) -> int:
         num_tokens = 0
         for m in self.list(chat_id):
-            for content in m["content"]:
-                if content["type"] == "text":
-                    num_tokens += self.get_num_tokens(content["text"])
-                    break
+            if isinstance(m["content"], str):
+                num_tokens += self.get_num_tokens(m["content"])
+            else:
+                for content in m["content"]:
+                    if content["type"] == "text":
+                        num_tokens += self.get_num_tokens(content["text"])
+                        break
         return num_tokens
 
     def limit_num_tokens(self: t.Self, chat_id: int) -> None:
@@ -242,6 +245,19 @@ class TextMessageHandler:
 
         text = message.text or message.caption
         text = text.removeprefix(bot_name)
+
+        if text.strip().startswith("system:"):
+            self.messages.collector.setdefault(group_id, [])
+            for msg in self.messages.collector[group_id]:
+                if msg["role"] == "system":
+                    msg["content"] = text.removeprefix("system:")
+                    break
+            else:
+                sys_message: MessageParam = {"role": "system", "content": text.strip().removeprefix("system:")}
+                self.messages.add(group_id, sys_message)
+                await message.reply_text("New system prompt has been adopted.")
+            return
+
         message_content.append({"type": "text", "text": text})
 
         if photo := message.photo:
