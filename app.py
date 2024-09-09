@@ -125,6 +125,8 @@ class VoiceMessageHandler:
     async def handle(self, update: Update, context: CallbackContext[Bot, str, str, str]) -> None:
         group_id = update.effective_chat.id
 
+        logger.info(f"Chat ID: {group_id}")
+
         if self.rate_limiter.is_limited(chat_id=group_id):
             await update.message.reply_text(
                 "You can only transcribe one message per 10 seconds. Please wait.",
@@ -220,6 +222,9 @@ class TextMessageHandler:
 
     async def handle(self, update: Update, context: CallbackContext[Bot, str, str, str]) -> None:
         group_id = update.effective_chat.id
+
+        logger.info(f"Chat ID: {group_id}")
+
         message: Message = update.message
 
         if self.rate_limiter.is_limited(chat_id=group_id):
@@ -301,14 +306,14 @@ def main() -> None:
             filters.VOICE
             & filters.Chat(chat_id=settings.allowed_group_ids + settings.test_group_ids),
             voice_message_handler.handle,
-        )
+        ),
     )
     application.add_handler(
         MessageHandler(
             (filters.TEXT | filters.PHOTO)
             & filters.Chat(chat_id=settings.allowed_group_ids + settings.test_group_ids),
             text_message_handler.handle,
-        )
+        ),
     )
     application.add_handler(CommandHandler("help", help_command))
 
