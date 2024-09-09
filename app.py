@@ -283,7 +283,7 @@ class TextMessageHandler:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /help is issued."""
     await update.message.reply_text(
-        "Send a voice message in a group and the bot will transcribe it!",
+        "Send a voice message to the group and the bot will transcribe it!",
     )
 
 
