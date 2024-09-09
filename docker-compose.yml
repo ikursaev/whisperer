@@ -9,6 +9,8 @@ services:
     secrets:
       - .secrets.toml
     restart: unless-stopped
+    logging:
+      driver: syslog
 secrets:
   .secrets.toml:
     file: .secrets.toml
