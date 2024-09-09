@@ -227,15 +227,15 @@ class TextMessageHandler:
 
         message: Message = update.message
 
+        bot_name = update.get_bot().name
+
+        if not self.is_message_for_bot(bot_name, message):
+            return
+
         if self.rate_limiter.is_limited(chat_id=group_id):
             await message.reply_text(
                 "You can only transcribe one message per 10 seconds. Please wait.",
             )
-            return
-
-        bot_name = update.get_bot().name
-
-        if not self.is_message_for_bot(bot_name, message):
             return
 
         message_content: list[TextContent | ImageContent] = []
