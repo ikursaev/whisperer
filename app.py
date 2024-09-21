@@ -4,13 +4,11 @@ import base64
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 import logging
-from logging import handlers
-import time
 import typing as t
 
 import openai as oai
 from pydub import AudioSegment
-from telegram import Bot, File, Message, Update
+from telegram import constants, Bot, File, Message, Update
 from telegram.ext import (
     ApplicationBuilder,
     CallbackContext,
@@ -49,17 +47,7 @@ class MessageParam(t.TypedDict, total=False):
     role: t.Required[t.Literal["user", "assistant", "system"]]
     """The role of the messages author, in this case `user`."""
 
-
-# log_handler = handlers.RotatingFileHandler("whisperer.log", maxBytes=1_048_576, backupCount=5)
-# formatter = logging.Formatter(
-#     "%(asctime)s program_name [%(process)d]: %(message)s",
-#     "%b %d %H:%M:%S",
-# )
-# formatter.converter = time.gmtime  # if you want UTC time
-# log_handler.setFormatter(formatter)
 logger = logging.getLogger()
-# logger.addHandler(log_handler)
-# logger.setLevel(logging.DEBUG)
 
 
 class DummyLimiter:
@@ -246,15 +234,44 @@ class TextMessageHandler:
         text = message.text or message.caption
         text = text.removeprefix(bot_name)
 
+        system_default_content = ("""
+
+Additional instructions:
+
+The following tags are currently supported:
+
+<b>bold</b>, <strong>bold</strong>
+<i>italic</i>, <em>italic</em>
+<u>underline</u>, <ins>underline</ins>
+<s>strikethrough</s>, <strike>strikethrough</strike>, <del>strikethrough</del>
+<span class="tg-spoiler">spoiler</span>, <tg-spoiler>spoiler</tg-spoiler>
+<b>bold <i>italic bold <s>italic bold strikethrough <span class="tg-spoiler">italic bold strikethrough spoiler</span></s> <u>underline italic bold</u></i> bold</b>
+<a href="http://www.example.com/">inline URL</a>
+<a href="tg://user?id=123456789">inline mention of a user</a>
+<tg-emoji emoji-id="5368324170671202286">👍</tg-emoji>
+<code>inline fixed-width code</code>
+<pre>pre-formatted fixed-width code block</pre>
+<pre><code class="language-python">pre-formatted fixed-width code block written in the Python programming language</code></pre>
+<blockquote>Block quotation started\nBlock quotation continued\nThe last line of the block quotation</blockquote>
+<blockquote expandable>Expandable block quotation started\nExpandable block quotation continued\nExpandable block quotation continued\nHidden by default part of the block quotation started\nExpandable block quotation continued\nThe last line of the block quotation</blockquote>
+
+Please note:
+
+Only use the tags mentioned above.
+All <, > and & symbols that are not a part of a tag or an HTML entity must be replaced with the corresponding HTML entities (< with &lt;, > with &gt; and & with &amp;).
+All numerical HTML entities are supported.
+Use only the following named HTML entities: &lt;, &gt;, &amp; and &quot;.
+Use nested pre and code tags, to define programming language for pre entity.
+Programming language can't be specified for standalone code tags.
+""")
+        system_default: MessageParam = {"role": "system", "content": system_default_content}
+        self.messages.collector.setdefault(group_id, [system_default])
+
         if text.strip().startswith("system:"):
-            self.messages.collector.setdefault(group_id, [])
             for msg in self.messages.collector[group_id]:
                 if msg["role"] == "system":
-                    msg["content"] = text.removeprefix("system:")
+                    msg["content"] = text.removeprefix("system:") + system_default_content
                     break
-            else:
-                sys_message: MessageParam = {"role": "system", "content": text.strip().removeprefix("system:")}
-                self.messages.add(group_id, sys_message)
             await message.reply_text("New system prompt has been adopted.")
             return
 
@@ -292,7 +309,7 @@ class TextMessageHandler:
             assistant_message: MessageParam = {"role": "assistant", "content": [contents]}
             self.messages.add(group_id, assistant_message)
             if content is not None:
-                await message.reply_text(content)
+                await message.reply_text(content, parse_mode=constants.ParseMode.HTML)
             return
 
 
