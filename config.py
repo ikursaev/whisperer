@@ -18,6 +18,7 @@ class _Settings:
     server: Server
     max_input_tokens: int
     max_output_tokens: int
+    default_system_prompt: str
 
 settings = ts.load(
     cls=_Settings, appname="whisperer", config_files=["settings.toml", ".secrets.toml"],

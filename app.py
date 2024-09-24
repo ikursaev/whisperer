@@ -2,13 +2,14 @@
 
 import base64
 from datetime import UTC, datetime, timedelta
+from collections import defaultdict as dd
 from io import BytesIO
 import logging
 import typing as t
 
 import openai as oai
 from pydub import AudioSegment
-from telegram import constants, Bot, File, Message, Update
+from telegram import Bot, File, Message, Update, constants
 from telegram.ext import (
     ApplicationBuilder,
     CallbackContext,
@@ -47,7 +48,11 @@ class MessageParam(t.TypedDict, total=False):
     role: t.Required[t.Literal["user", "assistant", "system"]]
     """The role of the messages author, in this case `user`."""
 
+
 logger = logging.getLogger()
+
+
+MESSAGE_COLLECTORS = {}
 
 
 class DummyLimiter:
@@ -81,7 +86,8 @@ def convert_ogg_to_mp3(ogg_file: t.BinaryIO) -> None:
 
 class WhisperASR:
     async def transcribe(
-        self, output_voice_file: None | t.BinaryIO = None
+        self,
+        output_voice_file: None | t.BinaryIO = None,
     ) -> oai.types.audio.Transcription:
         if not output_voice_file:
             logger.exception("Error transcribing speech. Output file is not specified")
@@ -137,41 +143,85 @@ class VoiceMessageHandler:
 
 
 class MessageCollector:
-    def __init__(self) -> None:
-        self.collector: dict[int, list[MessageParam]] = {}
+    def __init__(self, context: CallbackContext[Bot, str, str, str]) -> None:
         self.encoding = tiktoken.encoding_for_model(settings.model)
+        self.message_branches: dict[int, list[MessageParam]] = dd(lambda: [{"role": "system", "content": settings.default_system_prompt}])
+        self.message_graph: dict[int, int] = {}
+        self.context = context
 
-    def add(self, chat_id: int, message: MessageParam) -> None:
-        self.collector.setdefault(chat_id, []).append(message)
-        self.limit_num_tokens(chat_id)
+    async def get_origin_message_id(self, message_id: int) -> int:
+        prev_message_id = self.message_graph[message_id]
+        if prev_message_id == message_id:
+            return message_id
+        return await self.get_origin_message_id(prev_message_id)
 
-    def get(self, chat_id: int, index: int = 0) -> MessageParam:
-        if not self.collector:
-            error = "The collector is empty!"
-            raise IndexError(error)
-        return self.collector[chat_id][index]
+    async def set_system_prompt(self, text: str, branch_id: int) -> None:
+        for msg in self.message_branches[branch_id]:
+            if msg["role"] == "system":
+                msg["content"] = text.removeprefix("system:") + settings.default_system_prompt
+                break
 
-    def list(self, chat_id: int) -> list[MessageParam]:
-        if chat_id not in self.collector:
-            error = "The collector for this chat is empty!"
-            raise ValueError(error)
-        return self.collector[chat_id]
+    async def encode_image(self: t.Self, image: BytesIO) -> str:
+        return base64.b64encode(image.read()).decode("utf-8")
 
-    def pop(self, chat_id: int, index: int = 0) -> MessageParam:
-        if chat_id not in self.collector:
-            error = "The collector for this chat is empty!"
-            raise ValueError(error)
-        return self.collector[chat_id].pop(index)
+    async def get_branch(self, message: Message) -> list[MessageParam]:
+        branch_id = await self.get_origin_message_id(message.message_id)
+        return self.message_branches[branch_id]
+
+    async def handle_image(self, message: Message) -> ImageContent:
+        file_id = message.photo[-1].file_id
+        file = await self.context.bot.get_file(file_id)
+        image = BytesIO(await file.download_as_bytearray())
+        base64_image = await self.encode_image(image)
+        image_content: ImageContent = {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
+        }
+        return image_content
+
+    async def add(
+        self,
+        message: Message,
+        role: t.Literal["user", "system", "assistant"] = "user",
+    ) -> None:
+        message_id = message.message_id
+
+        reply_to = message.reply_to_message
+        reply_to_id = reply_to.message_id if reply_to else message_id
+
+        self.message_graph[message_id] = reply_to_id
+
+        branch_id = await self.get_origin_message_id(message_id)
+
+        text = (message.text or message.caption or "").strip().removeprefix(self.context.bot.name)
+
+        if text.startswith("system:"):
+            await self.set_system_prompt(text, branch_id)
+            await message.reply_text("New system prompt has been adopted.")
+            return
+
+        message_content: list[TextContent | ImageContent] = [{"type": "text", "text": text}]
+
+        if message.photo:
+            image_content = await self.handle_image(message)
+            message_content.append(image_content)
+
+        user_message: MessageParam = {"role": role, "content": message_content}
+
+        branch = self.message_branches[branch_id]
+        branch.append(user_message)
+
+        self.limit_num_tokens(branch)
 
     def get_num_tokens(self: t.Self, string: str | None) -> int:
         """Returns the number of tokens in a text string."""
-        if string is None:
+        if not string:
             return 0
         return len(self.encoding.encode(string))
 
-    def get_total_tokens(self: t.Self, chat_id: int) -> int:
+    def get_total_tokens(self: t.Self, branch: list[MessageParam]) -> int:
         num_tokens = 0
-        for m in self.list(chat_id):
+        for m in branch:
             if isinstance(m["content"], str):
                 num_tokens += self.get_num_tokens(m["content"])
             else:
@@ -181,10 +231,13 @@ class MessageCollector:
                         break
         return num_tokens
 
-    def limit_num_tokens(self: t.Self, chat_id: int) -> None:
-        total_tokens = self.get_total_tokens(chat_id)
+    def limit_num_tokens(self: t.Self, branch: list[MessageParam]) -> None:
+        total_tokens = self.get_total_tokens(branch)
         while total_tokens > settings.max_input_tokens:
-            earliest_message_contents = self.pop(chat_id, 0)["content"]
+            if branch[0]["role"] != "system":
+                earliest_message_contents = branch.pop(0)["content"]
+            else:
+                earliest_message_contents = branch.pop(1)["content"]
             for content in earliest_message_contents:
                 if content["type"] == "text":
                     total_tokens -= self.get_num_tokens(content["text"])
@@ -192,24 +245,21 @@ class MessageCollector:
 
 
 class TextMessageHandler:
-    def __init__(self, messages: MessageCollector, rate_limiter: RateLimiter):
+    def __init__(self, rate_limiter: RateLimiter):
         self.rate_limiter = rate_limiter
-        self.messages = messages
 
-    def is_message_for_bot(self, bot_name: str, message: Message) -> bool:
-        text: str = message.text or message.caption
-        is_bot_mentioned = text.startswith(bot_name)
+    def is_branch_start(self, bot_name: str, message: Message) -> bool:
+        text: str = (message.text or message.caption or "").strip()
+        return text.startswith(bot_name)
 
+    def is_reply(self, bot_name: str, message: Message) -> bool:
         is_reply_to_bot = False
         is_reply_to_whisperer = False
         if reply := message.reply_to_message:
             is_reply_to_bot = reply.from_user.is_bot
             is_reply_to_whisperer = reply.from_user.username == bot_name[1:]
 
-        return is_bot_mentioned or is_reply_to_bot and is_reply_to_whisperer
-
-    async def encode_image(self: t.Self, image: BytesIO) -> str:
-        return base64.b64encode(image.read()).decode("utf-8")
+        return is_reply_to_bot and is_reply_to_whisperer
 
     async def handle(self, update: Update, context: CallbackContext[Bot, str, str, str]) -> None:
         group_id = update.effective_chat.id
@@ -218,9 +268,12 @@ class TextMessageHandler:
 
         message: Message = update.message
 
-        bot_name = update.get_bot().name
+        bot_name = context.bot.name
 
-        if not self.is_message_for_bot(bot_name, message):
+        is_branch_start = self.is_branch_start(bot_name, message)
+        is_reply = self.is_reply(bot_name, message)
+
+        if not (is_branch_start or is_reply):
             return
 
         if self.rate_limiter.is_limited(chat_id=group_id):
@@ -229,72 +282,19 @@ class TextMessageHandler:
             )
             return
 
-        message_content: list[TextContent | ImageContent] = []
+        message_collector: MessageCollector = MESSAGE_COLLECTORS.setdefault(
+            group_id,
+            MessageCollector(context),
+        )
 
-        text = message.text or message.caption
-        text = text.removeprefix(bot_name)
+        await message_collector.add(message)
 
-        system_default_content = ("""
-
-Additional instructions:
-
-The following tags are currently supported:
-
-<b>bold</b>, <strong>bold</strong>
-<i>italic</i>, <em>italic</em>
-<u>underline</u>, <ins>underline</ins>
-<s>strikethrough</s>, <strike>strikethrough</strike>, <del>strikethrough</del>
-<span class="tg-spoiler">spoiler</span>, <tg-spoiler>spoiler</tg-spoiler>
-<b>bold <i>italic bold <s>italic bold strikethrough <span class="tg-spoiler">italic bold strikethrough spoiler</span></s> <u>underline italic bold</u></i> bold</b>
-<a href="http://www.example.com/">inline URL</a>
-<a href="tg://user?id=123456789">inline mention of a user</a>
-<tg-emoji emoji-id="5368324170671202286">👍</tg-emoji>
-<code>inline fixed-width code</code>
-<pre>pre-formatted fixed-width code block</pre>
-<pre><code class="language-python">pre-formatted fixed-width code block written in the Python programming language</code></pre>
-<blockquote>Block quotation started\nBlock quotation continued\nThe last line of the block quotation</blockquote>
-<blockquote expandable>Expandable block quotation started\nExpandable block quotation continued\nExpandable block quotation continued\nHidden by default part of the block quotation started\nExpandable block quotation continued\nThe last line of the block quotation</blockquote>
-
-Please note:
-
-Only use the tags mentioned above.
-All <, > and & symbols that are not a part of a tag or an HTML entity must be replaced with the corresponding HTML entities (< with &lt;, > with &gt; and & with &amp;).
-All numerical HTML entities are supported.
-Use only the following named HTML entities: &lt;, &gt;, &amp; and &quot;.
-Use nested pre and code tags, to define programming language for pre entity.
-Programming language can't be specified for standalone code tags.
-""")
-        system_default: MessageParam = {"role": "system", "content": system_default_content}
-        self.messages.collector.setdefault(group_id, [system_default])
-
-        if text.strip().startswith("system:"):
-            for msg in self.messages.collector[group_id]:
-                if msg["role"] == "system":
-                    msg["content"] = text.removeprefix("system:") + system_default_content
-                    break
-            await message.reply_text("New system prompt has been adopted.")
-            return
-
-        message_content.append({"type": "text", "text": text})
-
-        if photo := message.photo:
-            file_id = photo[-1].file_id
-            file = await context.bot.get_file(file_id)
-            image = BytesIO(await file.download_as_bytearray())
-            base64_image = await self.encode_image(image)
-            image_content: ImageContent = {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
-            }
-            message_content.append(image_content)
-
-        user_message: MessageParam = {"role": "user", "content": message_content}
-        self.messages.add(group_id, user_message)
+        messages = await message_collector.get_branch(message)
 
         try:
             response = await client.chat.completions.create(
                 model=settings.model,
-                messages=self.messages.list(group_id),
+                messages=messages,
                 max_tokens=settings.max_output_tokens,
             )
         except Exception:
@@ -304,12 +304,10 @@ Programming language can't be specified for standalone code tags.
             )
             return
         else:
-            content: str = response.choices[0].message.content
-            contents: TextContent = {"type": "text", "text": content}
-            assistant_message: MessageParam = {"role": "assistant", "content": [contents]}
-            self.messages.add(group_id, assistant_message)
-            if content is not None:
-                await message.reply_text(content, parse_mode=constants.ParseMode.HTML)
+            openai_response = response.choices[0].message.content or ""
+            if openai_response:
+                bot_message = await message.reply_text(openai_response, parse_mode=constants.ParseMode.HTML)
+                await message_collector.add(bot_message, role="assistant")
             return
 
 
@@ -330,8 +328,7 @@ def main() -> None:
     voice_message_transcriber = VoiceMessageTranscriber(whisper_asr)
 
     voice_message_handler = VoiceMessageHandler(voice_message_transcriber, rate_limiter)
-    message_collector = MessageCollector()
-    text_message_handler = TextMessageHandler(message_collector, rate_limiter)
+    text_message_handler = TextMessageHandler(rate_limiter)
 
     application = ApplicationBuilder().token(settings.bot_api_key).build()
     application.add_handler(
