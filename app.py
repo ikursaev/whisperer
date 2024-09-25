@@ -1,8 +1,8 @@
 """Telegram Whisperer bot."""
 
 import base64
-from datetime import UTC, datetime, timedelta
 from collections import defaultdict as dd
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 import logging
 import typing as t
@@ -145,7 +145,9 @@ class VoiceMessageHandler:
 class MessageCollector:
     def __init__(self, context: CallbackContext[Bot, str, str, str]) -> None:
         self.encoding = tiktoken.encoding_for_model(settings.model)
-        self.message_branches: dict[int, list[MessageParam]] = dd(lambda: [{"role": "system", "content": settings.default_system_prompt}])
+        self.message_branches: dict[int, list[MessageParam]] = dd(
+            lambda: [{"role": "system", "content": settings.default_system_prompt}],
+        )
         self.message_graph: dict[int, int] = {}
         self.context = context
 
@@ -306,7 +308,9 @@ class TextMessageHandler:
         else:
             openai_response = response.choices[0].message.content or ""
             if openai_response:
-                bot_message = await message.reply_text(openai_response, parse_mode=constants.ParseMode.HTML)
+                bot_message = await message.reply_text(
+                    openai_response, parse_mode=constants.ParseMode.HTML,
+                )
                 await message_collector.add(bot_message, role="assistant")
             return
 
